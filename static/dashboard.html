@@ -1,0 +1,1010 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HR Triage — Admin Dashboard</title>
+  <style>
+    /* ── Reset & Base ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface-2: #232734;
+      --border: #2e3345;
+      --text: #e1e4ed;
+      --text-dim: #8b8fa3;
+      --accent: #6c5ce7;
+      --accent-hover: #7c6ff7;
+      --green: #00b894;
+      --yellow: #fdcb6e;
+      --red: #e17055;
+      --blue: #74b9ff;
+      --radius: 8px;
+      --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      --mono: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* ── Layout ── */
+    .shell {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 0 24px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 24px;
+    }
+
+    header h1 {
+      font-size: 20px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    header h1 span.dot {
+      width: 8px; height: 8px;
+      background: var(--green);
+      border-radius: 50%;
+      display: inline-block;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .tab {
+      padding: 10px 20px;
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 14px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+      font-family: var(--font);
+    }
+
+    .tab:hover { color: var(--text); }
+    .tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .card-header h2 {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    /* ── Stats Row ── */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+
+    .stat-card .label {
+      font-size: 12px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .stat-card .value {
+      font-size: 28px;
+      font-weight: 700;
+    }
+
+    .stat-card .value.green { color: var(--green); }
+    .stat-card .value.yellow { color: var(--yellow); }
+    .stat-card .value.blue { color: var(--blue); }
+
+    /* ── Table ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th {
+      text-align: left;
+      padding: 10px 12px;
+      color: var(--text-dim);
+      font-weight: 500;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    tr:hover td { background: var(--surface-2); }
+
+    /* ── Badges ── */
+    .badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .badge.approved { background: rgba(0,184,148,0.15); color: var(--green); }
+    .badge.pending { background: rgba(253,203,110,0.15); color: var(--yellow); }
+    .badge.error { background: rgba(225,112,85,0.15); color: var(--red); }
+
+    /* ── Buttons ── */
+    .btn {
+      padding: 8px 16px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: all 0.15s;
+    }
+
+    .btn:hover { background: var(--surface-2); border-color: var(--text-dim); }
+
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+
+    .btn.primary:hover { background: var(--accent-hover); }
+
+    .btn.danger {
+      border-color: var(--red);
+      color: var(--red);
+    }
+
+    .btn.danger:hover { background: rgba(225,112,85,0.1); }
+
+    .btn.sm { padding: 4px 10px; font-size: 12px; }
+
+    /* ── Forms ── */
+    .form-group {
+      margin-bottom: 12px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      padding: 8px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 14px;
+      font-family: var(--font);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--accent);
+    }
+
+    select { cursor: pointer; }
+
+    /* ── Field Builder ── */
+    .field-row {
+      display: grid;
+      grid-template-columns: 1fr 2fr 120px 40px;
+      gap: 8px;
+      align-items: end;
+      margin-bottom: 8px;
+    }
+
+    .field-row .remove-btn {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: none;
+      color: var(--red);
+      cursor: pointer;
+      font-size: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+    }
+
+    .field-row .remove-btn:hover {
+      background: rgba(225,112,85,0.1);
+      border-color: var(--red);
+    }
+
+    /* ── Skill Cards ── */
+    .skill-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 12px;
+    }
+
+    .skill-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+
+    .skill-card h3 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .skill-card p {
+      font-size: 13px;
+      color: var(--text-dim);
+      line-height: 1.4;
+    }
+
+    .skill-meta {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .skill-meta span {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: var(--surface-2);
+      color: var(--text-dim);
+    }
+
+    /* ── Detail Panel ── */
+    .detail-panel {
+      position: fixed;
+      top: 0; right: -480px;
+      width: 480px; height: 100vh;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      z-index: 100;
+      transition: right 0.3s ease;
+      overflow-y: auto;
+      padding: 24px;
+    }
+
+    .detail-panel.open { right: 0; }
+
+    .detail-overlay {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(0,0,0,0.5);
+      z-index: 99;
+      display: none;
+    }
+
+    .detail-overlay.open { display: block; }
+
+    .detail-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .detail-header h2 { font-size: 18px; }
+
+    .close-btn {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: none;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .close-btn:hover { background: var(--surface-2); }
+
+    .detail-section {
+      margin-bottom: 20px;
+    }
+
+    .detail-section h3 {
+      font-size: 12px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+
+    .data-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .data-item {
+      background: var(--bg);
+      padding: 10px;
+      border-radius: var(--radius);
+    }
+
+    .data-item .data-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-bottom: 2px;
+    }
+
+    .data-item .data-value {
+      font-size: 14px;
+      word-break: break-all;
+    }
+
+    .data-item .data-value a {
+      color: var(--blue);
+      text-decoration: none;
+    }
+
+    .data-item .data-value a:hover { text-decoration: underline; }
+
+    pre.json-block {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* ── Empty State ── */
+    .empty-state {
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--text-dim);
+    }
+
+    .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+    .empty-state p { font-size: 14px; }
+
+    /* ── Toast ── */
+    .toast-container {
+      position: fixed;
+      bottom: 24px; right: 24px;
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .toast {
+      padding: 12px 20px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      animation: slideIn 0.3s ease;
+      max-width: 360px;
+    }
+
+    .toast.success { background: rgba(0,184,148,0.9); color: white; }
+    .toast.error { background: rgba(225,112,85,0.9); color: white; }
+    .toast.info { background: rgba(108,92,231,0.9); color: white; }
+
+    @keyframes slideIn {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+
+    /* ── Loading ── */
+    .spinner {
+      display: inline-block;
+      width: 16px; height: 16px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-row td {
+      text-align: center;
+      padding: 32px;
+      color: var(--text-dim);
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      .shell { padding: 12px; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .field-row { grid-template-columns: 1fr; }
+      .detail-panel { width: 100%; right: -100%; }
+      .data-grid { grid-template-columns: 1fr; }
+      table { font-size: 13px; }
+      th, td { padding: 8px; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="shell">
+  <!-- Header -->
+  <header>
+    <h1><span class="dot"></span> HR Triage Dashboard</h1>
+    <div class="header-actions">
+      <button class="btn sm" onclick="refreshAll()">↻ Refresh</button>
+    </div>
+  </header>
+
+  <!-- Stats -->
+  <div class="stats" id="stats">
+    <div class="stat-card">
+      <div class="label">Total Applicants</div>
+      <div class="value blue" id="stat-total">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Approved</div>
+      <div class="value green" id="stat-approved">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Pending</div>
+      <div class="value yellow" id="stat-pending">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Skills Loaded</div>
+      <div class="value" id="stat-skills">—</div>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" data-tab="applicants">Applicants</button>
+    <button class="tab" data-tab="requirements">Requirements</button>
+    <button class="tab" data-tab="skills">Skills</button>
+  </div>
+
+  <!-- Tab: Applicants -->
+  <div class="tab-content active" id="tab-applicants">
+    <div class="card">
+      <div class="card-header">
+        <h2>All Applicants</h2>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <select id="filter-status" onchange="loadApplicants()" style="width:auto;">
+            <option value="">All Statuses</option>
+            <option value="PENDING">Pending</option>
+            <option value="APPROVED">Approved</option>
+          </select>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Candidate</th>
+            <th>Thread</th>
+            <th>Status</th>
+            <th>Missing</th>
+            <th>Replies</th>
+            <th>Updated</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="applicants-body">
+          <tr class="loading-row"><td colspan="7"><div class="spinner"></div> Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Tab: Requirements -->
+  <div class="tab-content" id="tab-requirements">
+    <div class="card">
+      <div class="card-header">
+        <h2>Inbox Requirements</h2>
+      </div>
+
+      <!-- Lookup -->
+      <div style="display:flex;gap:8px;margin-bottom:20px;">
+        <input id="req-inbox-id" placeholder="Enter inbox ID…" style="flex:1;" />
+        <button class="btn primary" onclick="loadRequirements()">Load</button>
+      </div>
+
+      <!-- Current Requirements Display -->
+      <div id="req-display" style="display:none;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="font-size:14px;" id="req-inbox-label">—</h3>
+          <div style="display:flex;gap:6px;">
+            <span class="badge" id="req-type-badge">default</span>
+            <button class="btn sm danger" onclick="deleteRequirements()">Delete</button>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr><th>Field Name</th><th>Description</th><th>Type</th></tr>
+          </thead>
+          <tbody id="req-fields-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Builder -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Create / Update Requirements</h2>
+      </div>
+
+      <div class="form-group">
+        <label>Inbox ID</label>
+        <input id="builder-inbox-id" placeholder="e.g. inbox_abc123" />
+      </div>
+
+      <div id="field-builder">
+        <!-- Dynamic rows inserted here -->
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button class="btn" onclick="addFieldRow()">+ Add Field</button>
+        <div style="flex:1;"></div>
+        <button class="btn primary" onclick="saveRequirements('POST')">Create</button>
+        <button class="btn" onclick="saveRequirements('PUT')">Update</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab: Skills -->
+  <div class="tab-content" id="tab-skills">
+    <div class="skill-grid" id="skills-grid">
+      <div class="empty-state"><div class="spinner"></div><p>Loading skills…</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- Detail Slide Panel -->
+<div class="detail-overlay" id="detail-overlay" onclick="closeDetail()"></div>
+<div class="detail-panel" id="detail-panel">
+  <div class="detail-header">
+    <h2 id="detail-title">Applicant Detail</h2>
+    <button class="close-btn" onclick="closeDetail()">✕</button>
+  </div>
+  <div id="detail-body"></div>
+</div>
+
+<!-- Toasts -->
+<div class="toast-container" id="toasts"></div>
+
+<script>
+  // ── Config ──
+  const API = window.location.origin;
+
+  // ── Tab Switching ──
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+    });
+  });
+
+  // ── Toast ──
+  function toast(message, type = 'info') {
+    const container = document.getElementById('toasts');
+    const el = document.createElement('div');
+    el.className = 'toast ' + type;
+    el.textContent = message;
+    container.appendChild(el);
+    setTimeout(() => el.remove(), 4000);
+  }
+
+  // ── API Helpers ──
+  async function api(path, options = {}) {
+    try {
+      const res = await fetch(API + path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+      return data;
+    } catch (err) {
+      toast(err.message, 'error');
+      throw err;
+    }
+  }
+
+  // ── Applicants ──
+  let allApplicants = [];
+
+  async function loadApplicants() {
+    const tbody = document.getElementById('applicants-body');
+    tbody.innerHTML = '<tr class="loading-row"><td colspan="7"><div class="spinner"></div> Loading…</td></tr>';
+
+    try {
+      const data = await api('/applicants');
+      allApplicants = data.applicants || [];
+      renderApplicants();
+    } catch (e) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-state">Failed to load applicants</td></tr>';
+    }
+  }
+
+  function renderApplicants() {
+    const filter = document.getElementById('filter-status').value;
+    const filtered = filter
+      ? allApplicants.filter(a => a.status === filter)
+      : allApplicants;
+
+    const tbody = document.getElementById('applicants-body');
+
+    if (filtered.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7"><div class="empty-state"><div class="icon">📭</div><p>No applicants found</p></div></td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = filtered.map(a => `
+      <tr>
+        <td style="font-weight:500;">${escHtml(a.candidate_email)}</td>
+        <td><code style="font-size:12px;color:var(--text-dim);">${escHtml(a.thread_id?.slice(0, 12))}…</code></td>
+        <td><span class="badge ${a.status.toLowerCase()}">${a.status}</span></td>
+        <td>${(a.missing_fields || []).length > 0
+          ? (a.missing_fields || []).map(f => `<span style="font-size:12px;background:var(--surface-2);padding:1px 6px;border-radius:4px;margin-right:4px;">${escHtml(f)}</span>`).join('')
+          : '<span style="color:var(--green);font-size:12px;">✓ Complete</span>'
+        }</td>
+        <td>${a.reply_count || 0}</td>
+        <td style="font-size:12px;color:var(--text-dim);">${timeAgo(a.updated_at)}</td>
+        <td><button class="btn sm" onclick="viewApplicant('${escHtml(a.thread_id)}')">View</button></td>
+      </tr>
+    `).join('');
+
+    // Update stats
+    document.getElementById('stat-total').textContent = allApplicants.length;
+    document.getElementById('stat-approved').textContent = allApplicants.filter(a => a.status === 'APPROVED').length;
+    document.getElementById('stat-pending').textContent = allApplicants.filter(a => a.status === 'PENDING').length;
+  }
+
+  async function viewApplicant(threadId) {
+    try {
+      const data = await api('/applicants/' + threadId);
+      const body = document.getElementById('detail-body');
+
+      body.innerHTML = `
+        <div class="detail-section">
+          <h3>Status</h3>
+          <span class="badge ${data.status.toLowerCase()}" style="font-size:14px;padding:4px 14px;">${data.status}</span>
+        </div>
+
+        <div class="detail-section">
+          <h3>Info</h3>
+          <div class="data-grid">
+            <div class="data-item">
+              <div class="data-label">Email</div>
+              <div class="data-value">${escHtml(data.candidate_email)}</div>
+            </div>
+            <div class="data-item">
+              <div class="data-label">Replies</div>
+              <div class="data-value">${data.reply_count}</div>
+            </div>
+            <div class="data-item">
+              <div class="data-label">Created</div>
+              <div class="data-value">${data.created_at ? new Date(data.created_at).toLocaleString() : '—'}</div>
+            </div>
+            <div class="data-item">
+              <div class="data-label">${data.status === 'APPROVED' ? 'Approved At' : 'Updated At'}</div>
+              <div class="data-value">${data.approved_at ? new Date(data.approved_at).toLocaleString() : (data.updated_at ? new Date(data.updated_at).toLocaleString() : '—')}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="detail-section">
+          <h3>Extracted Data</h3>
+          ${Object.keys(data.extracted_data || {}).length > 0
+            ? `<div class="data-grid">${Object.entries(data.extracted_data).map(([k, v]) => `
+                <div class="data-item">
+                  <div class="data-label">${escHtml(k)}</div>
+                  <div class="data-value">${isUrl(v) ? `<a href="${escHtml(v)}" target="_blank">${escHtml(v)}</a>` : escHtml(String(v))}</div>
+                </div>`).join('')}</div>`
+            : '<p style="color:var(--text-dim);font-size:13px;">No data extracted yet</p>'
+          }
+        </div>
+
+        <div class="detail-section">
+          <h3>Missing Fields</h3>
+          ${(data.missing_fields || []).length > 0
+            ? (data.missing_fields || []).map(f => `<span class="badge pending" style="margin-right:6px;margin-bottom:4px;">${escHtml(f)}</span>`).join('')
+            : '<span style="color:var(--green);font-size:13px;">✓ All fields complete</span>'
+          }
+        </div>
+
+        <div class="detail-section">
+          <h3>Thread ID</h3>
+          <pre class="json-block">${escHtml(data.thread_id)}</pre>
+        </div>
+      `;
+
+      document.getElementById('detail-title').textContent = data.candidate_email;
+      document.getElementById('detail-panel').classList.add('open');
+      document.getElementById('detail-overlay').classList.add('open');
+    } catch (e) {
+      // toast already shown by api()
+    }
+  }
+
+  function closeDetail() {
+    document.getElementById('detail-panel').classList.remove('open');
+    document.getElementById('detail-overlay').classList.remove('open');
+  }
+
+  // ── Requirements ──
+  async function loadRequirements() {
+    const inboxId = document.getElementById('req-inbox-id').value.trim();
+    if (!inboxId) { toast('Enter an inbox ID', 'error'); return; }
+
+    try {
+      const data = await api('/requirements/' + inboxId);
+      const display = document.getElementById('req-display');
+      display.style.display = 'block';
+
+      document.getElementById('req-inbox-label').textContent = 'Inbox: ' + inboxId;
+
+      const badge = document.getElementById('req-type-badge');
+      badge.textContent = data.is_custom ? 'custom' : 'default';
+      badge.className = 'badge ' + (data.is_custom ? 'approved' : 'pending');
+
+      const tbody = document.getElementById('req-fields-body');
+      tbody.innerHTML = data.required_fields.map(f => `
+        <tr>
+          <td><code>${escHtml(f.name)}</code></td>
+          <td>${escHtml(f.description)}</td>
+          <td><span class="badge" style="background:var(--surface-2);color:var(--text-dim);">${escHtml(f.field_type)}</span></td>
+        </tr>
+      `).join('');
+
+      // Pre-fill builder
+      document.getElementById('builder-inbox-id').value = inboxId;
+      populateBuilder(data.required_fields);
+
+    } catch (e) { /* toast shown */ }
+  }
+
+  async function deleteRequirements() {
+    const inboxId = document.getElementById('req-inbox-id').value.trim();
+    if (!inboxId) return;
+    if (!confirm('Delete custom requirements for ' + inboxId + '? This reverts to defaults.')) return;
+
+    try {
+      await api('/requirements/' + inboxId, { method: 'DELETE' });
+      toast('Requirements deleted — reverted to defaults', 'success');
+      loadRequirements();
+    } catch (e) { /* toast shown */ }
+  }
+
+  // ── Field Builder ──
+  let fieldCounter = 0;
+
+  function addFieldRow(name = '', description = '', fieldType = 'url') {
+    const builder = document.getElementById('field-builder');
+    const id = fieldCounter++;
+    const row = document.createElement('div');
+    row.className = 'field-row';
+    row.id = 'field-row-' + id;
+    row.innerHTML = `
+      <div>
+        <label style="font-size:11px;color:var(--text-dim);">Name</label>
+        <input class="field-name" value="${escHtml(name)}" placeholder="e.g. linkedin" />
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--text-dim);">Description</label>
+        <input class="field-desc" value="${escHtml(description)}" placeholder="e.g. Your LinkedIn profile URL" />
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--text-dim);">Type</label>
+        <select class="field-type">
+          <option value="url" ${fieldType === 'url' ? 'selected' : ''}>url</option>
+          <option value="file" ${fieldType === 'file' ? 'selected' : ''}>file</option>
+          <option value="text" ${fieldType === 'text' ? 'selected' : ''}>text</option>
+          <option value="email" ${fieldType === 'email' ? 'selected' : ''}>email</option>
+          <option value="phone" ${fieldType === 'phone' ? 'selected' : ''}>phone</option>
+        </select>
+      </div>
+      <div style="padding-top:18px;">
+        <button class="remove-btn" onclick="document.getElementById('field-row-${id}').remove()">✕</button>
+      </div>
+    `;
+    builder.appendChild(row);
+  }
+
+  function populateBuilder(fields) {
+    document.getElementById('field-builder').innerHTML = '';
+    fieldCounter = 0;
+    fields.forEach(f => addFieldRow(f.name, f.description, f.field_type));
+  }
+
+  function collectFields() {
+    const rows = document.querySelectorAll('#field-builder .field-row');
+    const fields = [];
+    rows.forEach(row => {
+      const name = row.querySelector('.field-name').value.trim();
+      const description = row.querySelector('.field-desc').value.trim();
+      const field_type = row.querySelector('.field-type').value;
+      if (name && description) {
+        fields.push({ name, description, field_type });
+      }
+    });
+    return fields;
+  }
+
+  async function saveRequirements(method) {
+    const inboxId = document.getElementById('builder-inbox-id').value.trim();
+    if (!inboxId) { toast('Enter an inbox ID', 'error'); return; }
+
+    const fields = collectFields();
+    if (fields.length === 0) { toast('Add at least one field', 'error'); return; }
+
+    try {
+      await api('/requirements/' + inboxId, {
+        method: method,
+        body: JSON.stringify({ required_fields: fields }),
+      });
+      toast('Requirements ' + (method === 'POST' ? 'created' : 'updated') + '!', 'success');
+
+      // Reload the display
+      document.getElementById('req-inbox-id').value = inboxId;
+      loadRequirements();
+    } catch (e) { /* toast shown */ }
+  }
+
+  // ── Skills ──
+  async function loadSkills() {
+    try {
+      const data = await api('/skills');
+      const grid = document.getElementById('skills-grid');
+
+      const entries = Object.entries(data);
+      document.getElementById('stat-skills').textContent = entries.length;
+
+      if (entries.length === 0) {
+        grid.innerHTML = '<div class="empty-state"><div class="icon">📦</div><p>No skills loaded</p></div>';
+        return;
+      }
+
+      grid.innerHTML = entries.map(([name, s]) => `
+        <div class="skill-card">
+          <h3>
+            ${s.execution_mode === 'deterministic' ? '⚙️' : '🧠'}
+            ${escHtml(name)}
+          </h3>
+          <p>${escHtml((s.description || '').slice(0, 140))}${(s.description || '').length > 140 ? '…' : ''}</p>
+          <div class="skill-meta">
+            <span>${escHtml(s.execution_mode)}</span>
+            <span>${escHtml(s.license || 'No license')}</span>
+            ${s.metadata?.version ? `<span>v${escHtml(s.metadata.version)}</span>` : ''}
+            ${s.metadata?.['skill-author'] ? `<span>${escHtml(s.metadata['skill-author'])}</span>` : ''}
+          </div>
+        </div>
+      `).join('');
+    } catch (e) {
+      document.getElementById('skills-grid').innerHTML = '<div class="empty-state"><p>Failed to load skills</p></div>';
+    }
+  }
+
+  // ── Utilities ──
+  function escHtml(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function isUrl(str) {
+    return typeof str === 'string' && (str.startsWith('http://') || str.startsWith('https://'));
+  }
+
+  function timeAgo(dateStr) {
+    if (!dateStr) return '—';
+    const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+    if (seconds < 60) return 'just now';
+    if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+    if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+    return Math.floor(seconds / 86400) + 'd ago';
+  }
+
+  // ── Init ──
+  function refreshAll() {
+    loadApplicants();
+    loadSkills();
+    toast('Refreshed', 'info');
+  }
+
+  // Add default field rows to builder
+  addFieldRow('linkedin', 'Your LinkedIn profile URL', 'url');
+  addFieldRow('github', 'Your GitHub profile URL', 'url');
+  addFieldRow('resume', 'Your resume as a file attachment or link', 'file');
+
+  // Initial load
+  loadApplicants();
+  loadSkills();
+</script>
+
+</body>
+</html>
