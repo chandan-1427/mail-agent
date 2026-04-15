@@ -1,0 +1,9 @@
+services:
+  hr-triage-agent:
+    build: .
+    container_name: hr-triage-agent
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    restart: unless-stopped
