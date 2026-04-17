@@ -181,10 +181,10 @@ class ApplicantState(Base):
     missing_fields = Column(JSON, default=list)
     latest_message = Column(String)
     reply_count = Column(Integer, default=0)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    approved_at = Column(DateTime, nullable=True)
-    stalled_at = Column(DateTime, nullable=True)  # Tier 4: Stalled status tracking
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    approved_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    stalled_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class ApplicantMessageLog(Base):
@@ -194,7 +194,7 @@ class ApplicantMessageLog(Base):
     sender_email = Column(String)
     message_id = Column(String)
     raw_text = Column(String)
-    received_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    received_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class ApplicantFile(Base):
@@ -207,7 +207,7 @@ class ApplicantFile(Base):
     original_filename = Column(String, nullable=False)
     stored_filename = Column(String, nullable=False)
     file_path = Column(String, nullable=False)
-    uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    uploaded_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class JobRequirement(Base):
@@ -215,8 +215,8 @@ class JobRequirement(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     inbox_id = Column(String, unique=True, index=True, nullable=False)
     required_fields = Column(JSON, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class ApplicantStateHistory(Base):
@@ -227,7 +227,7 @@ class ApplicantStateHistory(Base):
     new_status = Column(String)
     old_missing_fields = Column(JSON)
     new_missing_fields = Column(JSON)
-    changed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    changed_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 Base.metadata.create_all(bind=engine)
@@ -283,17 +283,11 @@ VALID_FIELD_TYPES = {"url", "file", "text", "email", "phone"}
 DEFAULT_REQUIREMENTS = [
     {"name": "full_name", "description": "Your full name", "field_type": "text"},
     {"name": "email", "description": "Your email address", "field_type": "email"},
-    {"name": "phone", "description": "Your phone number", "field_type": "phone"},
-    {"name": "address", "description": "Your current address/location", "field_type": "text"},
     {"name": "linkedin", "description": "Your LinkedIn profile URL", "field_type": "url"},
     {"name": "github", "description": "Your GitHub profile URL", "field_type": "url"},
-    {"name": "portfolio", "description": "Your portfolio or personal website URL", "field_type": "url"},
     {"name": "resume", "description": "Your resume as a file attachment or link", "field_type": "file"},
-    {"name": "cover_letter", "description": "Your cover letter as a file attachment", "field_type": "file"},
     {"name": "years_experience", "description": "Your total years of relevant experience", "field_type": "text"},
     {"name": "current_role", "description": "Your current job title or role", "field_type": "text"},
-    {"name": "expected_salary", "description": "Your expected salary range", "field_type": "text"},
-    {"name": "availability", "description": "Your availability to start (immediate, 2 weeks notice, etc.)", "field_type": "text"},
     {"name": "skills_summary", "description": "Brief summary of your key skills and technologies", "field_type": "text"},
 ]
 
@@ -365,7 +359,7 @@ def _make_model(task_type: str = "default"):
             base_url="https://openrouter.ai/api/v1",
         ),
         "triage": OpenAIChat(
-            id="openai/o1-preview",  # Smartest model for triage decisions
+            id="openai/o3-mini",  # Smartest model for triage decisions
             api_key=OPENROUTER_API_KEY,
             base_url="https://openrouter.ai/api/v1",
         ),
@@ -560,35 +554,6 @@ Provide a JSON response with:
 
 
 # ============================================================
-# 9. INTERVIEW SCHEDULING (Tier 4)
-# ============================================================
-
-def generate_interview_scheduling_prompt(candidate_email: str, extracted_data: dict, resume_score: dict) -> str:
-    """Generate interview scheduling prompt for approved candidates."""
-    overall_score = resume_score.get("overall_score", 0)
-    strengths = resume_score.get("strengths", [])
-    
-    scheduling_prompt = f"""
-Congratulations! Your application has been approved.
-
-Based on your resume evaluation (Score: {overall_score}/100), we'd like to schedule an interview with you.
-
-Your strengths identified: {', '.join(strengths[:3]) if strengths else 'N/A'}
-
-Please reply with your availability for the next 2 weeks, including:
-- Preferred days and times
-- Time zone
-- Any scheduling constraints
-
-We'll send calendar invites for the interview slots.
-
-Best regards,
-HR Team
-"""
-    return scheduling_prompt
-
-
-# ============================================================
 # 10. ASYNC EMAIL QUEUE (Tier 4)
 # ============================================================
 
@@ -768,11 +733,23 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
 
     # Tier 4: Stalled detection and escalation
     if state.status == "PENDING" and state.updated_at:
-        days_since_update = (datetime.now(timezone.utc) - state.updated_at).days
+        updated_at = state.updated_at
+
+        # Normalize timezone-naive DB datetime values
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+        now_utc = datetime.now(timezone.utc)
+        days_since_update = (now_utc - updated_at).days
+
         if days_since_update >= STALLED_THRESHOLD_DAYS and not state.stalled_at:
             state.status = "STALLED"
-            state.stalled_at = datetime.now(timezone.utc)
-            trigger_escalation(thread_id, sender, f"Application stalled for {days_since_update} days")
+            state.stalled_at = now_utc
+            trigger_escalation(
+                thread_id,
+                sender,
+                f"Application stalled for {days_since_update} days"
+            )
             db.commit()
 
     # 1. Attachments
@@ -825,26 +802,27 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
             if req["field_type"] == "file" and req["name"] == file_type:
                 current_extracted[req["name"]] = file_path
     
-    # Handle structured output with confidence scores
     llm_extracted = parsed_data.get("extracted_data", parsed_data)
-    confidence_scores = parsed_data.get("confidence_scores", {})
-    
+
     for key, value in llm_extracted.items():
         if key == "summary":
             continue
-        # Handle structured ExtractedField objects
-        if isinstance(value, dict) and "value" in value:
-            field_confidence = value.get("confidence", 1.0)
-            if field_confidence >= 0.5:  # Reject low-confidence extractions
-                current_extracted[key] = value["value"]
-                print(f"  ✓ {key}: confidence={field_confidence:.2f}")
-            else:
-                print(f"  ✗ {key}: rejected (confidence={field_confidence:.2f})")
-        # Handle simple string values (backward compatibility)
-        elif value and isinstance(value, str) and value.strip():
-            current_extracted[key] = value
-            print(f"  ✓ {key}: (no confidence score)")
-    
+
+        if value is None:
+            continue
+
+        if isinstance(value, str):
+            cleaned_value = value.strip()
+            if cleaned_value:
+                current_extracted[key] = cleaned_value
+                print(f"  ✓ {key}: {cleaned_value[:80]}")
+
+        elif isinstance(value, dict) and "value" in value:
+            cleaned_value = str(value["value"]).strip()
+            if cleaned_value:
+                current_extracted[key] = cleaned_value
+                print(f"  ✓ {key}: {cleaned_value[:80]}")
+
     state.extracted_data = current_extracted
 
     # 4. Triage
@@ -904,19 +882,23 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
     # 5. Compose reply
     print("  [4/4] ✉️  hr-reply-composer")
     try:
-        # Tier 4: Use interview scheduling prompt for approved candidates with resume scores
-        if state.status == "APPROVED" and "_resume_score" in state.extracted_data:
-            print("  [Tier 4] 📅 Using interview scheduling prompt...")
-            reply_text = generate_interview_scheduling_prompt(
-                sender, current_extracted, state.extracted_data["_resume_score"]
-            )
+        # Tier 4: Send different replies based on approval status and missing fields
+        if state.status == "APPROVED":
+            reply_text = f"""
+        Thank you for providing all the required details.
+
+        We have successfully received your application and supporting information. Our team will review everything and get back to you if there are any next steps.
+
+        Best regards,
+        HR Team
+        """.strip()
         else:
             composer_prompt = f"""
-    candidate_email: {sender}
-    application_status: {state.status}
-    missing_fields: {json.dumps(missing_field_objects)}
-    items_received: {json.dumps(list(current_extracted.keys()))}
-    """
+        candidate_email: {sender}
+        application_status: {state.status}
+        missing_fields: {json.dumps(missing_field_objects)}
+        items_received: {json.dumps(list(current_extracted.keys()))}
+        """
             composer_response = retry_with_backoff(lambda: reply_composer_agent.run(composer_prompt))
             composer_result = _parse_agent_json(composer_response.content)
             reply_text = composer_result.get("reply_draft", "")

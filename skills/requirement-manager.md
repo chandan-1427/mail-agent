@@ -92,20 +92,14 @@ When no JobRequirement exists for an inbox, use these defaults:
 
 ```json
 [
-  {"name": "full_name", "description": "Your full name", "field_type": "text"},
-  {"name": "email", "description": "Your email address", "field_type": "email"},
-  {"name": "phone", "description": "Your phone number", "field_type": "phone"},
-  {"name": "address", "description": "Your current address/location", "field_type": "text"},
-  {"name": "linkedin", "description": "Your LinkedIn profile URL", "field_type": "url"},
-  {"name": "github", "description": "Your GitHub profile URL", "field_type": "url"},
-  {"name": "portfolio", "description": "Your portfolio or personal website URL", "field_type": "url"},
-  {"name": "resume", "description": "Your resume as a file attachment or link", "field_type": "file"},
-  {"name": "cover_letter", "description": "Your cover letter as a file attachment", "field_type": "file"},
-  {"name": "years_experience", "description": "Your total years of relevant experience", "field_type": "text"},
-  {"name": "current_role", "description": "Your current job title or role", "field_type": "text"},
-  {"name": "expected_salary", "description": "Your expected salary range", "field_type": "text"},
-  {"name": "availability", "description": "Your availability to start (immediate, 2 weeks notice, etc.)", "field_type": "text"},
-  {"name": "skills_summary", "description": "Brief summary of your key skills and technologies", "field_type": "text"}
+    {"name": "full_name", "description": "Your full name", "field_type": "text"},
+    {"name": "email", "description": "Your email address", "field_type": "email"},
+    {"name": "linkedin", "description": "Your LinkedIn profile URL", "field_type": "url"},
+    {"name": "github", "description": "Your GitHub profile URL", "field_type": "url"},
+    {"name": "resume", "description": "Your resume as a file attachment or link", "field_type": "file"},
+    {"name": "years_experience", "description": "Your total years of relevant experience", "field_type": "text"},
+    {"name": "current_role", "description": "Your current job title or role", "field_type": "text"},
+    {"name": "skills_summary", "description": "Brief summary of your key skills and technologies", "field_type": "text"},
 ]
 ```
 
