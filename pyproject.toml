@@ -11,6 +11,8 @@ dependencies = [
     "fastapi>=0.135.3",
     "openai>=2.31.0",
     "psycopg2-binary>=2.9.11",
+    "pypdf2>=3.0.0",
+    "requests>=2.31.0",
     "sqlalchemy>=2.0.49",
     "uvicorn>=0.44.0",
     "x402<0.4",
