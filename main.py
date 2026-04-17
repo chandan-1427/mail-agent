@@ -1,6 +1,7 @@
 import os
 import uvicorn
 import json
+import time
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -21,6 +22,21 @@ from bindu.penguin.bindufy import bindufy
 from skills_loader import load_skills, get_skill_content
 
 load_dotenv()
+
+# ============================================================
+# RETRY UTILITY
+# ============================================================
+def retry_with_backoff(func, max_retries=3, delay=1):
+    """Simple retry logic for external API calls with exponential backoff."""
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise e
+            wait_time = delay * (2 ** attempt)
+            print(f"  ⚠️ Retry {attempt + 1}/{max_retries} after {wait_time}s: {e}")
+            time.sleep(wait_time)
 
 # ============================================================
 # 1. ENVIRONMENT & DATABASE
@@ -136,9 +152,20 @@ class TriageResult(BaseModel):
 VALID_FIELD_TYPES = {"url", "file", "text", "email", "phone"}
 
 DEFAULT_REQUIREMENTS = [
+    {"name": "full_name", "description": "Your full name", "field_type": "text"},
+    {"name": "email", "description": "Your email address", "field_type": "email"},
+    {"name": "phone", "description": "Your phone number", "field_type": "phone"},
+    {"name": "address", "description": "Your current address/location", "field_type": "text"},
     {"name": "linkedin", "description": "Your LinkedIn profile URL", "field_type": "url"},
     {"name": "github", "description": "Your GitHub profile URL", "field_type": "url"},
+    {"name": "portfolio", "description": "Your portfolio or personal website URL", "field_type": "url"},
     {"name": "resume", "description": "Your resume as a file attachment or link", "field_type": "file"},
+    {"name": "cover_letter", "description": "Your cover letter as a file attachment", "field_type": "file"},
+    {"name": "years_experience", "description": "Your total years of relevant experience", "field_type": "text"},
+    {"name": "current_role", "description": "Your current job title or role", "field_type": "text"},
+    {"name": "expected_salary", "description": "Your expected salary range", "field_type": "text"},
+    {"name": "availability", "description": "Your availability to start (immediate, 2 weeks notice, etc.)", "field_type": "text"},
+    {"name": "skills_summary", "description": "Brief summary of your key skills and technologies", "field_type": "text"},
 ]
 
 
@@ -323,7 +350,7 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
     # 2. Parse email
     print("  [2/4] 🔍 email-parser")
     try:
-        parser_response = email_parser_agent.run(f"""
+        email_prompt = f"""
     candidate_email: {sender}
     current_known_data: {json.dumps(state.extracted_data)}
     attached_file_types: {json.dumps(list(saved_files.keys()))}
@@ -331,7 +358,8 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
 
     email_body:
     {raw_text}
-    """)
+    """
+        parser_response = retry_with_backoff(lambda: email_parser_agent.run(email_prompt))
         parsed_data = _parse_agent_json(parser_response.content)
     except Exception as e:
         print(f"        ⚠️ {e}")
@@ -356,13 +384,14 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
     # 4. Triage
     print("  [3/4] ⚖️  application-triage")
     try:
-        triage_response = triage_agent.run(f"""
+        triage_prompt = f"""
     required_fields: {json.dumps(requirements)}
     extracted_data: {json.dumps(current_extracted)}
-    """)
+    """
+        triage_response = retry_with_backoff(lambda: triage_agent.run(triage_prompt))
         _parse_agent_json(triage_response.content)
     except Exception as e:
-        print(f"        ⚠️ {e}")
+        print(f"        {e}")
 
     # Server-side authority
     missing_fields = [fn for fn in field_names
@@ -402,12 +431,13 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
     # 5. Compose reply
     print("  [4/4] ✉️  hr-reply-composer")
     try:
-        composer_response = reply_composer_agent.run(f"""
+        composer_prompt = f"""
     candidate_email: {sender}
     application_status: {state.status}
     missing_fields: {json.dumps(missing_field_objects)}
     items_received: {json.dumps(list(current_extracted.keys()))}
-    """)
+    """
+        composer_response = retry_with_backoff(lambda: reply_composer_agent.run(composer_prompt))
         composer_result = _parse_agent_json(composer_response.content)
         reply_text = composer_result.get("reply_draft", "")
     except Exception as e:
@@ -422,9 +452,9 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
 
     if reply_text:
         print(f"  📤 Sending reply to {sender}...")
-        agentmail_client.inboxes.messages.reply(
+        retry_with_backoff(lambda: agentmail_client.inboxes.messages.reply(
             inbox_id=inbox_id, message_id=message_id, text=reply_text,
-        )
+        ))
 
     return {"status": "processed", "applicant_status": state.status}
 
