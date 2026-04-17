@@ -2,14 +2,17 @@ import os
 import uvicorn
 import json
 import time
+import logging
+import hmac
+import hashlib
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 # Database imports
-from sqlalchemy import Integer, create_engine, Column, String, JSON, DateTime
+from sqlalchemy import Integer, create_engine, Column, String, JSON, DateTime, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from agno.agent import Agent
@@ -22,6 +25,111 @@ from bindu.penguin.bindufy import bindufy
 from skills_loader import load_skills, get_skill_content
 
 load_dotenv()
+
+# ============================================================
+# STRUCTURED LOGGING
+# ============================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# TIER 3: RATE LIMITING & SPAM DETECTION
+# ============================================================
+from collections import defaultdict
+from datetime import timedelta
+
+# Simple in-memory rate limiter
+rate_limit_store = defaultdict(list)
+RATE_LIMIT_WINDOW = timedelta(minutes=5)
+RATE_LIMIT_MAX_REQUESTS = 10
+
+# Reply caps to prevent excessive auto-replies
+MAX_REPLIES_PER_THREAD = 5
+
+# Tier 4: Stalled detection and escalation
+STALLED_THRESHOLD_DAYS = 7
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
+
+def trigger_escalation(thread_id: str, sender: str, reason: str):
+    """Trigger human-in-the-loop escalation (e.g., Slack notification)."""
+    logger.warning(f"Escalation triggered for thread {thread_id}: {reason}")
+    
+    if SLACK_WEBHOOK_URL:
+        try:
+            import requests
+            payload = {
+                "text": f" *Application Escalation*\n\nThread: {thread_id}\nCandidate: {sender}\nReason: {reason}\n\nRequires human review.",
+            }
+            requests.post(SLACK_WEBHOOK_URL, json=payload, timeout=10)
+            logger.info(f"Slack notification sent for thread {thread_id}")
+        except Exception as e:
+            logger.error(f"Failed to send Slack notification: {e}")
+    else:
+        logger.info("SLACK_WEBHOOK_URL not configured, skipping notification")
+
+def check_rate_limit(identifier: str) -> bool:
+    """Check if identifier has exceeded rate limit."""
+    now = datetime.now(timezone.utc)
+    # Clean old entries
+    rate_limit_store[identifier] = [
+        ts for ts in rate_limit_store[identifier]
+        if now - ts < RATE_LIMIT_WINDOW
+    ]
+    # Check limit
+    if len(rate_limit_store[identifier]) >= RATE_LIMIT_MAX_REQUESTS:
+        logger.warning(f"Rate limit exceeded for {identifier}")
+        return False
+    # Add current request
+    rate_limit_store[identifier].append(now)
+    return True
+
+# Spam detection keywords
+SPAM_KEYWORDS = [
+    "viagra", "casino", "lottery", "winner", "congratulations",
+    "bitcoin", "crypto", "investment opportunity", "nigerian prince",
+    "click here", "free money", "urgent", "act now"
+]
+
+def detect_spam(text: str, sender: str) -> tuple[bool, str]:
+    """Simple keyword-based spam detection."""
+    text_lower = text.lower()
+    for keyword in SPAM_KEYWORDS:
+        if keyword in text_lower:
+            return True, f"Spam keyword detected: {keyword}"
+    
+    # Check for excessive capitalization
+    if len(text) > 50 and (sum(1 for c in text if c.isupper()) / len(text)) > 0.7:
+        return True, "Excessive capitalization detected"
+    
+    # Check for excessive repetition
+    if len(text) > 20:
+        words = text.split()
+        if len(set(words)) < len(words) * 0.3:
+            return True, "Excessive repetition detected"
+    
+    return False, ""
+
+# Webhook signature verification
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+
+def verify_webhook_signature(payload: str, signature: str) -> bool:
+    """Verify webhook signature using HMAC-SHA256."""
+    if not WEBHOOK_SECRET:
+        logger.warning("WEBHOOK_SECRET not set, skipping signature verification")
+        return True  # Allow if secret not configured (dev mode)
+    
+    expected_signature = hmac.new(
+        WEBHOOK_SECRET.encode(),
+        payload.encode(),
+        hashlib.sha256
+    ).hexdigest()
+    
+    # Compare signatures safely
+    return hmac.compare_digest(expected_signature, signature)
 
 # ============================================================
 # RETRY UTILITY
@@ -76,6 +184,7 @@ class ApplicantState(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     approved_at = Column(DateTime, nullable=True)
+    stalled_at = Column(DateTime, nullable=True)  # Tier 4: Stalled status tracking
 
 
 class ApplicantMessageLog(Base):
@@ -143,6 +252,26 @@ class TriageResult(BaseModel):
     extracted_data: dict
     missing_fields: list[str]
     reply_draft: str | None
+
+
+# Tier 2: Structured Output with Confidence Scoring
+class ExtractedField(BaseModel):
+    value: str
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score 0-1")
+    source: str = Field(description="Where this came from: email_body, resume, cover_letter, etc.")
+
+
+class EmailParserResult(BaseModel):
+    extracted_data: dict[str, ExtractedField]
+    summary: str
+    confidence_scores: dict[str, float] = Field(default_factory=dict)
+
+
+class TriageDecision(BaseModel):
+    is_approved: bool
+    missing_fields: list[str]
+    reasoning: str
+    confidence: float = Field(ge=0.0, le=1.0)
 
 
 # ============================================================
@@ -221,19 +350,39 @@ print(f"   Loaded {len(SKILLS)} skills total\n")
 # 6. SKILL-POWERED AGENTS
 # ============================================================
 
-def _make_model():
-    return OpenAIChat(
-        id="openai/gpt-4o",
-        api_key=OPENROUTER_API_KEY,
-        base_url="https://openrouter.ai/api/v1",
-    )
+# Tier 4: Multi-model routing
+def _make_model(task_type: str = "default"):
+    """Factory function to return appropriate model based on task type."""
+    models = {
+        "spam_detection": OpenAIChat(
+            id="openai/gpt-4o-mini",  # Cheaper model for spam detection
+            api_key=OPENROUTER_API_KEY,
+            base_url="https://openrouter.ai/api/v1",
+        ),
+        "parsing": OpenAIChat(
+            id="openai/gpt-4o",  # Balanced model for parsing
+            api_key=OPENROUTER_API_KEY,
+            base_url="https://openrouter.ai/api/v1",
+        ),
+        "triage": OpenAIChat(
+            id="openai/o1-preview",  # Smartest model for triage decisions
+            api_key=OPENROUTER_API_KEY,
+            base_url="https://openrouter.ai/api/v1",
+        ),
+        "default": OpenAIChat(
+            id="openai/gpt-4o",
+            api_key=OPENROUTER_API_KEY,
+            base_url="https://openrouter.ai/api/v1",
+        ),
+    }
+    return models.get(task_type, models["default"])
 
 
-def build_skill_agent(skill_name: str, agent_name: str | None = None) -> Agent:
+def build_skill_agent(skill_name: str, agent_name: str | None = None, task_type: str = "default") -> Agent:
     skill_content = get_skill_content(SKILLS, skill_name)
     return Agent(
         name=agent_name or skill_name,
-        model=_make_model(),
+        model=_make_model(task_type),
         description=SKILLS[skill_name]["description"],
         instructions=[
             f"You are executing the '{skill_name}' skill. Follow these instructions exactly:",
@@ -243,16 +392,20 @@ def build_skill_agent(skill_name: str, agent_name: str | None = None) -> Agent:
             "CRITICAL: Return ONLY raw JSON as specified in the Output Format section.",
             "Do NOT wrap your response in markdown code fences.",
             "Do NOT include any text before or after the JSON.",
-        ],
+            ],
         markdown=False,
     )
 
 
-email_parser_agent = build_skill_agent("email-parser", "Email Parser")
-triage_agent = build_skill_agent("application-triage", "Triage Decision Agent")
-reply_composer_agent = build_skill_agent("hr-reply-composer", "Reply Composer")
+# Tier 4: Build agents with appropriate models
+email_parser_agent = build_skill_agent("email-parser", "Email Parser", task_type="parsing")
+triage_agent = build_skill_agent("application-triage", "Triage Decision Agent", task_type="triage")
+reply_composer_agent = build_skill_agent("hr-reply-composer", "Reply Composer", task_type="default")
 
-print("🤖 Skill-powered agents built\n")
+# Tier 4: Resume scoring agent (uses smartest model for evaluation)
+resume_scorer_agent = build_skill_agent("application-triage", "Resume Scorer", task_type="triage")
+
+print("🤖 Skill-powered agents built with multi-model routing\n")
 
 
 # ============================================================
@@ -262,8 +415,47 @@ print("🤖 Skill-powered agents built\n")
 agentmail_client = AgentMail(api_key=AGENTMAIL_API_KEY)
 
 
+def extract_text_from_file(file_path: str, filename: str) -> str:
+    """Extract text from PDF and text files."""
+    try:
+        lower_filename = filename.lower()
+        
+        # PDF extraction
+        if lower_filename.endswith('.pdf'):
+            try:
+                import PyPDF2
+                with open(file_path, 'rb') as f:
+                    reader = PyPDF2.PdfReader(f)
+                    text = ""
+                    for page in reader.pages:
+                        text += page.extract_text() + "\n"
+                    return text.strip()[:10000]  # Limit to 10k chars
+            except ImportError:
+                print(f"  ⚠️ PyPDF2 not installed, skipping PDF text extraction")
+                return ""
+            except Exception as e:
+                print(f"  ⚠️ Failed to extract PDF text: {e}")
+                return ""
+        
+        # Text file extraction
+        elif lower_filename.endswith(('.txt', '.md', '.csv')):
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    return f.read()[:10000]
+            except Exception as e:
+                print(f"  ⚠️ Failed to extract text: {e}")
+                return ""
+        
+        return ""
+    except Exception as e:
+        print(f"  ⚠️ Text extraction error: {e}")
+        return ""
+
+
 def attachment_handler(attachments, thread_id, sender, inbox_id, message_id, db):
     saved_files = {}
+    extracted_texts = {}
+    
     for attachment in attachments:
         original_filename = attachment.get("filename")
         attachment_id = attachment.get("attachment_id")
@@ -292,6 +484,13 @@ def attachment_handler(attachments, thread_id, sender, inbox_id, message_id, db)
                     file_bytes = response.read()
                 with open(file_path, "wb") as f:
                     f.write(file_bytes)
+                
+                # Extract text from the file
+                extracted_text = extract_text_from_file(file_path, original_filename)
+                if extracted_text:
+                    extracted_texts[file_type] = extracted_text
+                    print(f"  📄 Extracted {len(extracted_text)} chars from {original_filename}")
+                
                 db.add(ApplicantFile(
                     thread_id=thread_id, candidate_email=sender, message_id=message_id,
                     file_type=file_type, original_filename=original_filename,
@@ -299,11 +498,200 @@ def attachment_handler(attachments, thread_id, sender, inbox_id, message_id, db)
                 ))
         except Exception as e:
             print(f"  ⚠️ Failed to save attachment {original_filename}: {e}")
-    return saved_files
+    
+    return saved_files, extracted_texts
 
 
 # ============================================================
-# 8. JSON PARSER
+# 8. RESUME SCORING (Tier 4)
+# ============================================================
+
+def score_resume_against_requirements(resume_text: str, requirements: list[dict], extracted_data: dict) -> dict:
+    """Score resume against job requirements using AI."""
+    if not resume_text:
+        return {"overall_score": 0.0, "breakdown": {}, "reasoning": "No resume text provided"}
+    
+    try:
+        # Build requirement descriptions
+        req_descriptions = "\n".join([
+            f"- {r['name']}: {r['description']}" 
+            for r in requirements
+        ])
+        
+        # Build extracted data summary
+        extracted_summary = "\n".join([
+            f"- {k}: {v}" 
+            for k, v in extracted_data.items() 
+            if v and k not in ["resume", "cover_letter"]
+        ])
+        
+        scoring_prompt = f"""
+You are an expert resume evaluator. Score the following resume against the job requirements.
+
+JOB REQUIREMENTS:
+{req_descriptions}
+
+CANDIDATE EXTRACTED DATA:
+{extracted_summary}
+
+RESUME TEXT:
+{resume_text[:8000]}
+
+Provide a JSON response with:
+{{
+    "overall_score": <0-100 score>,
+    "breakdown": {{
+        "skills_match": <0-100>,
+        "experience_match": <0-100>,
+        "education_match": <0-100>,
+        "relevance": <0-100>
+    }},
+    "strengths": ["list of strengths"],
+    "weaknesses": ["list of weaknesses"],
+    "reasoning": "brief explanation of the score"
+}}
+"""
+        response = retry_with_backoff(lambda: resume_scorer_agent.run(scoring_prompt))
+        result = _parse_agent_json(response.content)
+        return result
+    except Exception as e:
+        logger.error(f"Resume scoring failed: {e}")
+        return {"overall_score": 0.0, "breakdown": {}, "reasoning": f"Scoring failed: {e}"}
+
+
+# ============================================================
+# 9. INTERVIEW SCHEDULING (Tier 4)
+# ============================================================
+
+def generate_interview_scheduling_prompt(candidate_email: str, extracted_data: dict, resume_score: dict) -> str:
+    """Generate interview scheduling prompt for approved candidates."""
+    overall_score = resume_score.get("overall_score", 0)
+    strengths = resume_score.get("strengths", [])
+    
+    scheduling_prompt = f"""
+Congratulations! Your application has been approved.
+
+Based on your resume evaluation (Score: {overall_score}/100), we'd like to schedule an interview with you.
+
+Your strengths identified: {', '.join(strengths[:3]) if strengths else 'N/A'}
+
+Please reply with your availability for the next 2 weeks, including:
+- Preferred days and times
+- Time zone
+- Any scheduling constraints
+
+We'll send calendar invites for the interview slots.
+
+Best regards,
+HR Team
+"""
+    return scheduling_prompt
+
+
+# ============================================================
+# 10. ASYNC EMAIL QUEUE (Tier 4)
+# ============================================================
+
+from collections import deque
+import threading
+
+# Simple in-memory email queue (can be extended to Redis/RabbitMQ)
+email_queue = deque()
+dead_letter_queue = deque()
+queue_lock = threading.Lock()
+MAX_QUEUE_SIZE = 1000
+
+def queue_email_for_sending(inbox_id: str, message_id: str, text: str, thread_id: str) -> bool:
+    """Queue email for async sending with dead-letter handling."""
+    with queue_lock:
+        if len(email_queue) >= MAX_QUEUE_SIZE:
+            logger.error(f"Email queue full, moving to dead letter queue: {thread_id}")
+            dead_letter_queue.append({
+                "inbox_id": inbox_id,
+                "message_id": message_id,
+                "text": text,
+                "thread_id": thread_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": "Queue full"
+            })
+            return False
+        
+        email_queue.append({
+            "inbox_id": inbox_id,
+            "message_id": message_id,
+            "text": text,
+            "thread_id": thread_id,
+            "attempts": 0,
+            "queued_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info(f"Email queued for thread {thread_id}")
+        return True
+
+def process_email_queue():
+    """Background thread to process email queue."""
+    while True:
+        with queue_lock:
+            if not email_queue:
+                time.sleep(1)
+                continue
+            
+            email_task = email_queue.popleft()
+        
+        try:
+            retry_with_backoff(lambda: agentmail_client.inboxes.messages.reply(
+                inbox_id=email_task["inbox_id"],
+                message_id=email_task["message_id"],
+                text=email_task["text"],
+            ))
+            logger.info(f"Email sent successfully for thread {email_task['thread_id']}")
+        except Exception as e:
+            logger.error(f"Failed to send email for thread {email_task['thread_id']}: {e}")
+            email_task["attempts"] += 1
+            
+            if email_task["attempts"] >= 3:
+                logger.error(f"Max retries exceeded, moving to dead letter queue: {email_task['thread_id']}")
+                with queue_lock:
+                    dead_letter_queue.append({
+                        **email_task,
+                        "error": str(e),
+                        "failed_at": datetime.now(timezone.utc).isoformat(),
+                    })
+            else:
+                # Re-queue for retry
+                with queue_lock:
+                    email_queue.appendleft(email_task)
+        
+        time.sleep(0.5)
+
+# Start email queue processor thread
+queue_thread = threading.Thread(target=process_email_queue, daemon=True)
+queue_thread.start()
+logger.info("Email queue processor started")
+
+
+# ============================================================
+# 11. CONVERSATION HISTORY
+# ============================================================
+
+def get_conversation_history(db, thread_id: str, limit: int = 10) -> list[dict]:
+    """Fetch full conversation history for a thread."""
+    logs = db.query(ApplicantMessageLog).filter(
+        ApplicantMessageLog.thread_id == thread_id
+    ).order_by(ApplicantMessageLog.received_at.asc()).limit(limit).all()
+    
+    return [
+        {
+            "sender": log.sender_email,
+            "message_id": log.message_id,
+            "text": log.raw_text,
+            "received_at": log.received_at.isoformat() if log.received_at else None,
+        }
+        for log in logs
+    ]
+
+
+# ============================================================
+# 9. JSON PARSER
 # ============================================================
 
 def _parse_agent_json(raw_content: str) -> dict:
@@ -318,7 +706,33 @@ def _parse_agent_json(raw_content: str) -> dict:
 
 
 # ============================================================
-# 9. ORCHESTRATOR
+# 9. BACKGROUND TASKS
+# ============================================================
+
+def process_webhook_background(sender: str, thread_id: str, inbox_id: str, message_id: str, raw_text: str, attachments: list):
+    """Background task to process webhook without blocking the response."""
+    db = SessionLocal()
+    try:
+        print(f"\n{'='*60}")
+        print(f"  🎯 Thread: {thread_id}")
+        print(f"  📧 From: {sender}")
+        print(f"{'='*60}")
+
+        result = run_orchestrator(
+            sender=sender, thread_id=thread_id, inbox_id=inbox_id,
+            message_id=message_id, raw_text=raw_text,
+            attachments=attachments, db=db,
+        )
+        print(f"\n✅ Complete: {result}")
+    except Exception as e:
+        print(f"\n❌ Background Error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+# ============================================================
+# 10. ORCHESTRATOR
 # ============================================================
 
 def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attachments, db):
@@ -343,13 +757,48 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
           "thread_id": thread_id,
       }
 
+    # Tier 3: Reply cap check
+    if (state.reply_count or 0) >= MAX_REPLIES_PER_THREAD:
+        logger.warning(f"Reply cap reached for thread {thread_id}")
+        return {
+            "status": "ignored",
+            "reason": "reply_cap_reached",
+            "thread_id": thread_id,
+        }
+
+    # Tier 4: Stalled detection and escalation
+    if state.status == "PENDING" and state.updated_at:
+        days_since_update = (datetime.now(timezone.utc) - state.updated_at).days
+        if days_since_update >= STALLED_THRESHOLD_DAYS and not state.stalled_at:
+            state.status = "STALLED"
+            state.stalled_at = datetime.now(timezone.utc)
+            trigger_escalation(thread_id, sender, f"Application stalled for {days_since_update} days")
+            db.commit()
+
     # 1. Attachments
     print("  [1/4] 📎 attachment-handler")
-    saved_files = attachment_handler(attachments, thread_id, sender, inbox_id, message_id, db)
+    saved_files, extracted_texts = attachment_handler(attachments, thread_id, sender, inbox_id, message_id, db)
 
-    # 2. Parse email
+    # 2. Parse email with conversation history
     print("  [2/4] 🔍 email-parser")
+    conversation_history = get_conversation_history(db, thread_id)
+    print(f"  💬 Conversation history: {len(conversation_history)} messages")
+    
     try:
+        # Combine extracted document texts with email body
+        document_context = ""
+        if extracted_texts:
+            document_context = "\n\n=== EXTRACTED DOCUMENT TEXT ===\n"
+            for file_type, text in extracted_texts.items():
+                document_context += f"\n--- {file_type.upper()} ---\n{text}\n"
+        
+        # Build conversation context
+        history_context = ""
+        if conversation_history:
+            history_context = "\n\n=== CONVERSATION HISTORY ===\n"
+            for msg in conversation_history:
+                history_context += f"\n[{msg['received_at']}] {msg['sender']}: {msg['text'][:200]}...\n"
+        
         email_prompt = f"""
     candidate_email: {sender}
     current_known_data: {json.dumps(state.extracted_data)}
@@ -358,6 +807,8 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
 
     email_body:
     {raw_text}
+    {document_context}
+    {history_context}
     """
         parser_response = retry_with_backoff(lambda: email_parser_agent.run(email_prompt))
         parsed_data = _parse_agent_json(parser_response.content)
@@ -365,7 +816,7 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
         print(f"        ⚠️ {e}")
         parsed_data = {"extracted_data": {}, "summary": "Parse failed"}
 
-    # 3. Merge
+    # 3. Merge with confidence scoring
     current_extracted = dict(state.extracted_data or {})
     for file_type, file_path in saved_files.items():
         if file_type in field_names:
@@ -373,12 +824,27 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
         for req in requirements:
             if req["field_type"] == "file" and req["name"] == file_type:
                 current_extracted[req["name"]] = file_path
+    
+    # Handle structured output with confidence scores
     llm_extracted = parsed_data.get("extracted_data", parsed_data)
+    confidence_scores = parsed_data.get("confidence_scores", {})
+    
     for key, value in llm_extracted.items():
         if key == "summary":
             continue
-        if value and isinstance(value, str) and value.strip():
+        # Handle structured ExtractedField objects
+        if isinstance(value, dict) and "value" in value:
+            field_confidence = value.get("confidence", 1.0)
+            if field_confidence >= 0.5:  # Reject low-confidence extractions
+                current_extracted[key] = value["value"]
+                print(f"  ✓ {key}: confidence={field_confidence:.2f}")
+            else:
+                print(f"  ✗ {key}: rejected (confidence={field_confidence:.2f})")
+        # Handle simple string values (backward compatibility)
+        elif value and isinstance(value, str) and value.strip():
             current_extracted[key] = value
+            print(f"  ✓ {key}: (no confidence score)")
+    
     state.extracted_data = current_extracted
 
     # 4. Triage
@@ -389,15 +855,14 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
     extracted_data: {json.dumps(current_extracted)}
     """
         triage_response = retry_with_backoff(lambda: triage_agent.run(triage_prompt))
-        _parse_agent_json(triage_response.content)
+        triage_result = _parse_agent_json(triage_response.content)
+        llm_missing = triage_result.get("missing_fields", [])
+        print(f"        LLM triage result: missing={llm_missing}")
     except Exception as e:
         print(f"        {e}")
+        llm_missing = []
 
-    # Server-side authority
-    missing_fields = [fn for fn in field_names
-                      if not (state.extracted_data.get(fn) or "").strip()
-                      if isinstance(state.extracted_data.get(fn, ""), str)]
-    # Handle non-string values (file paths are always strings, but be safe)
+    # Server-side authority - validate LLM result and handle edge cases
     missing_fields = []
     for fn in field_names:
         val = state.extracted_data.get(fn)
@@ -419,6 +884,14 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
         state.status = "APPROVED"
         state.missing_fields = []
         state.approved_at = datetime.now(timezone.utc)
+        
+        # Tier 4: Score resume against requirements when approved
+        resume_text = extracted_texts.get("resume", "")
+        if resume_text:
+            print("  [Tier 4] 📊 Scoring resume against requirements...")
+            score_result = score_resume_against_requirements(resume_text, requirements, current_extracted)
+            state.extracted_data["_resume_score"] = score_result
+            print(f"  📊 Resume score: {score_result.get('overall_score', 0)}/100")
     else:
         state.status = "PENDING"
         state.approved_at = None
@@ -431,15 +904,22 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
     # 5. Compose reply
     print("  [4/4] ✉️  hr-reply-composer")
     try:
-        composer_prompt = f"""
+        # Tier 4: Use interview scheduling prompt for approved candidates with resume scores
+        if state.status == "APPROVED" and "_resume_score" in state.extracted_data:
+            print("  [Tier 4] 📅 Using interview scheduling prompt...")
+            reply_text = generate_interview_scheduling_prompt(
+                sender, current_extracted, state.extracted_data["_resume_score"]
+            )
+        else:
+            composer_prompt = f"""
     candidate_email: {sender}
     application_status: {state.status}
     missing_fields: {json.dumps(missing_field_objects)}
     items_received: {json.dumps(list(current_extracted.keys()))}
     """
-        composer_response = retry_with_backoff(lambda: reply_composer_agent.run(composer_prompt))
-        composer_result = _parse_agent_json(composer_response.content)
-        reply_text = composer_result.get("reply_draft", "")
+            composer_response = retry_with_backoff(lambda: reply_composer_agent.run(composer_prompt))
+            composer_result = _parse_agent_json(composer_response.content)
+            reply_text = composer_result.get("reply_draft", "")
     except Exception as e:
         print(f"        ⚠️ {e}")
         if state.status == "PENDING":
@@ -451,10 +931,9 @@ def run_orchestrator(*, sender, thread_id, inbox_id, message_id, raw_text, attac
     db.commit()
 
     if reply_text:
-        print(f"  📤 Sending reply to {sender}...")
-        retry_with_backoff(lambda: agentmail_client.inboxes.messages.reply(
-            inbox_id=inbox_id, message_id=message_id, text=reply_text,
-        ))
+        print(f"  📤 Queueing reply to {sender}...")
+        # Tier 4: Use email queue for async sending with retry logic
+        queue_email_for_sending(inbox_id, message_id, reply_text, thread_id)
 
     return {"status": "processed", "applicant_status": state.status}
 
@@ -475,11 +954,65 @@ def dashboard():
         return f.read()
 
 
+# ── Health Check (Tier 3) ──
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint for monitoring."""
+    try:
+        db = SessionLocal()
+        # Test database connection
+        db.execute(text("SELECT 1"))
+        db.close()
+        
+        return JSONResponse({
+            "status": "healthy",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "services": {
+                "database": "connected",
+                "agentmail": "configured" if AGENTMAIL_API_KEY else "missing",
+                "openrouter": "configured" if OPENROUTER_API_KEY else "missing",
+            },
+            "skills_loaded": len(SKILLS),
+        })
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": str(e),
+            }
+        )
+
+
 # ── Webhook ──
 
 @app.post("/")
-async def handle_agentmail_webhook(request: Request):
-    payload = await request.json()
+async def handle_agentmail_webhook(request: Request, background_tasks: BackgroundTasks):
+    # Get raw body for signature verification
+    body_bytes = await request.body()
+    payload_str = body_bytes.decode('utf-8')
+    
+    # Tier 3: Webhook signature verification
+    signature = request.headers.get("X-Webhook-Signature", "")
+    if signature and not verify_webhook_signature(payload_str, signature):
+        logger.warning("Invalid webhook signature")
+        return JSONResponse(
+            status_code=401,
+            content={"status": "invalid_signature", "message": "Invalid webhook signature"}
+        )
+    
+    try:
+        payload = await request.json()
+    except Exception as e:
+        logger.error(f"Failed to parse JSON: {e}")
+        return JSONResponse(
+            status_code=400,
+            content={"status": "invalid_json", "message": "Invalid JSON payload"}
+        )
+    
     if payload.get("event_type") != "message.received":
         return {"status": "ignored"}
 
@@ -490,6 +1023,20 @@ async def handle_agentmail_webhook(request: Request):
     message_id = message_data.get("message_id")
     raw_text = message_data.get("text", "")
     attachments = message_data.get("attachments", [])
+
+    # Tier 3: Rate limiting check
+    if not check_rate_limit(sender):
+        logger.warning(f"Rate limit blocked: {sender}")
+        return JSONResponse(
+            status_code=429,
+            content={"status": "rate_limited", "message": "Too many requests"}
+        )
+
+    # Tier 3: Spam detection
+    is_spam, spam_reason = detect_spam(raw_text, sender)
+    if is_spam:
+        logger.warning(f"Spam detected from {sender}: {spam_reason}")
+        return {"status": "spam_rejected", "reason": spam_reason}
 
     db = SessionLocal()
     db.add(ApplicantMessageLog(
@@ -503,28 +1050,18 @@ async def handle_agentmail_webhook(request: Request):
         db.close()
         return {"status": "ignored"}
 
-    try:
-        print(f"\n{'='*60}")
-        print(f"  🎯 Thread: {thread_id}")
-        print(f"  📧 From: {sender}")
-        print(f"{'='*60}")
+    db.commit()
+    db.close()
 
-        result = run_orchestrator(
-            sender=sender, thread_id=thread_id, inbox_id=inbox_id,
-            message_id=message_id, raw_text=raw_text,
-            attachments=attachments, db=db,
-        )
-        print(f"\n✅ Complete: {result}")
-        return result
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        db.rollback()
-        return {"status": "error", "detail": str(e)}
-    finally:
-        db.close()
+    # Queue background processing
+    background_tasks.add_task(
+        process_webhook_background,
+        sender=sender, thread_id=thread_id, inbox_id=inbox_id,
+        message_id=message_id, raw_text=raw_text, attachments=attachments,
+    )
 
+    return {"status": "queued", "thread_id": thread_id}
 
-# ── Applicants API ──
 
 @app.get("/applicants")
 def list_applicants(status: str | None = None):
