@@ -385,13 +385,15 @@ BINDU_DEPLOYMENT_URL=http://localhost:3773    # Optional: Bindu deployment URL
 ### 4. Initialize the database
 
 ```bash
-python -c "from main import Base, engine; Base.metadata.create_all(bind=engine)"
+python -c "from app.database import init_db; init_db()"
 ```
 
 ### 5. Start the FastAPI server in the primary terminal
 
 ```bash
-uvicorn main:app --reload
+python main.py
+# OR
+uvicorn app.api:app --reload
 ```
 
 You should see the app start and confirm the dashboard URL.
@@ -632,9 +634,22 @@ BINDU_DEPLOYMENT_URL=http://localhost:3773
 
 ```
 mail-agent/
-├── main.py                 # FastAPI application + webhook orchestrator (698 lines)
-├── pyproject.toml          # Dependencies and project configuration
-├── skills_loader.py         # Skills loading and management utilities (86 lines)
+├── main.py                 # Application entry point (~150 lines)
+├── main_backup.py          # Original monolithic file (backup)
+├── app/                    # Application package (modular architecture)
+│   ├── __init__.py         # Package initialization
+│   ├── config.py           # Configuration & environment variables
+│   ├── database.py         # SQLAlchemy models & session management
+│   ├── schemas.py          # Pydantic models for validation
+│   ├── security.py         # Rate limiting, spam detection, webhook verification
+│   ├── agents.py           # AI agent building & management
+│   ├── attachments.py      # Attachment handling & text extraction
+│   ├── email_queue.py      # Async email queue with dead-letter support
+│   ├── requirements.py     # Job requirements management
+│   ├── orchestrator.py     # Main email processing logic
+│   ├── api.py              # FastAPI routes & endpoints
+│   └── utils.py            # Utility functions (retry, JSON parsing)
+├── skills_loader.py        # Skills loading and management utilities
 ├── skills/                 # AI skill definitions with YAML frontmatter
 │   ├── email-parser.md      # Extracts structured data from emails (92 lines)
 │   ├── attachment-handler.md # Deterministic file processing (73 lines)
@@ -642,7 +657,7 @@ mail-agent/
 │   ├── hr-reply-composer.md # Generates professional responses (91 lines)
 │   └── requirement-manager.md # Manages dynamic field requirements (136 lines)
 ├── static/
-│   └── dashboard.html       # Admin dashboard UI (1010 lines)
+│   └── dashboard.html       # Admin dashboard UI
 ├── uploads/                 # File storage directory
 │   ├── resumes/            # Resume and CV files
 │   ├── cover_letters/      # Cover letter attachments
@@ -681,9 +696,10 @@ The system uses SQLAlchemy with the following models:
 ## 🔧 Development Notes
 
 - `DATABASE_URL` can be local SQLite for immediate testing.
-- Run `python -c "from main import Base, engine; Base.metadata.create_all(bind=engine)"` after updating the database URL.
+- Run `python -c "from app.database import init_db; init_db()"` after updating the database URL.
 - The app ignores webhook events that are not `message.received`.
 - The webhook root endpoint is `POST /`.
+- The application uses a modular package structure under `app/` directory for better organization.
 
 ### Local Development Setup
 
@@ -707,12 +723,14 @@ The system uses SQLAlchemy with the following models:
 
 3. **Database Initialization:**
    ```bash
-   python -c "from main import Base, engine; Base.metadata.create_all(bind=engine)"
+   python -c "from app.database import init_db; init_db()"
    ```
 
 4. **Run Development Server:**
    ```bash
-   uvicorn main:app --reload --host 0.0.0.0 --port 8000
+   python main.py
+   # OR
+   uvicorn app.api:app --reload --host 0.0.0.0 --port 8000
    ```
 
 ### Skills Development
@@ -739,7 +757,7 @@ The system uses SQLAlchemy with the following models:
 curl http://localhost:8000/skills
 
 # Test individual skill via API
-python -c "from main import build_skill_agent; agent = build_skill_agent('email-parser'); print(agent.run('test input'))"
+python -c "from app.agents import build_skill_agent; from skills_loader import load_skills; skills = load_skills(); agent = build_skill_agent('email-parser', skills); print(agent.run('test input'))"
 ```
 
 ### Database Operations
@@ -813,7 +831,7 @@ docker-compose down
 
 2. **Database Migration:**
    ```bash
-   docker-compose exec agent python -c "from main import Base, engine; Base.metadata.create_all(bind=engine)"
+   docker-compose exec agent python -c "from app.database import init_db; init_db()"
    ```
 
 3. **SSL Configuration:**
@@ -836,10 +854,10 @@ export DATABASE_URL=postgresql://user:pass@host:5432/db
 export OPENROUTER_API_KEY=your-key
 
 # Initialize database
-python -c "from main import Base, engine; Base.metadata.create_all(bind=engine)"
+python -c "from app.database import init_db; init_db()"
 
 # Start application
-python -m main
+python main.py
 ```
 
 ## 🤝 Contributing
