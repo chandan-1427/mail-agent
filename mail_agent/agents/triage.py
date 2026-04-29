@@ -1,48 +1,43 @@
-"""
-agents/triage.py
-
-Evaluates which required fields are still missing after the email-parser
-has extracted what it can.
-
-Input prompt shape
-------------------
-required_fields  : list  (JSON)
-extracted_data   : dict  (JSON)
-
-Output (raw JSON)
------------------
-{
-  "missing_fields": ["<field_name>", ...],
-  "complete": true | false
-}
-"""
-
+# triage.py
+from functools import lru_cache
 import json
 import logging
 
-from ._base import build_agent
-from mail_agent.utils import parse_json
+from ._base import build_agent_with_static, _log_cache_metrics
+from mail_agent.model_factory import extract_json
 
 logger = logging.getLogger(__name__)
 
-_agent = build_agent("application-triage")
+
+@lru_cache(maxsize=16)
+def _get_agent(requirements_json: str):
+    requirements = json.loads(requirements_json)
+    field_names = ", ".join(r["name"] for r in requirements)
+    return build_agent_with_static(
+        skill_name="application-triage",
+        extra_static=[
+            f"Required field names: {field_names}",
+        ],
+    )
+
+
+def _requirements_key(requirements: list[dict]) -> str:
+    return json.dumps(
+        sorted(requirements, key=lambda x: x["name"]),
+        sort_keys=True, separators=(",", ":"),
+    )
 
 
 def run(*, requirements: list[dict], extracted_data: dict) -> dict:
-    """
-    Run the triage agent and return its result dict.
+    agent = _get_agent(_requirements_key(requirements))
 
-    Returns {"missing_fields": [], "complete": False} on failure so the
-    orchestrator can fall back to its own field-presence check.
-    """
-    prompt = f"""
-required_fields: {json.dumps(requirements)}
-extracted_data: {json.dumps(extracted_data)}
-""".strip()
+    # ✅ Only extracted_data is dynamic — everything else is in system prompt
+    prompt = f"extracted_data: {json.dumps(extracted_data)}"
 
     try:
-        response = _agent.run(prompt)
-        return parse_json(response.content)
+        response = agent.run(prompt)
+        _log_cache_metrics("triage", response)
+        return extract_json(response.content)
     except Exception as exc:
         logger.error(f"[triage] agent failed: {exc}")
         return {"missing_fields": [], "complete": False}

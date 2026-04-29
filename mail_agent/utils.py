@@ -91,9 +91,43 @@ def get_requirements(db, inbox_id: str) -> list[dict]:
 # JSON PARSING
 # ============================================================
 
-def parse_json(raw: str) -> dict:
-    cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    return json.loads(cleaned)
+def parse_json(raw) -> dict:
+    # unwrap Agno response object
+    if hasattr(raw, "content"):
+        raw = raw.content
+    if isinstance(raw, list):
+        raw = " ".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw)
+    if not isinstance(raw, str):
+        raw = str(raw)
+
+    # strip markdown fences
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
+    if fenced:
+        raw = fenced.group(1).strip()
+
+    # clean parse
+    try:
+        return json.loads(raw.strip())
+    except json.JSONDecodeError:
+        pass
+
+    # brace-match for first complete {...}
+    brace_count, start = 0, None
+    for i, ch in enumerate(raw):
+        if ch == "{":
+            if start is None:
+                start = i
+            brace_count += 1
+        elif ch == "}":
+            brace_count -= 1
+            if brace_count == 0 and start is not None:
+                try:
+                    return json.loads(raw[start:i + 1])
+                except json.JSONDecodeError:
+                    start, brace_count = None, 0
+
+    logging.getLogger(__name__).error(f"parse_json failed:\n{raw[:400]}")
+    return {}
 
 
 # ============================================================

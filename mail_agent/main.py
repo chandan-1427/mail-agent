@@ -54,30 +54,45 @@ def _setup_tracing() -> None:
         logger.debug("Tracing already initialized — skipping.")
         return
 
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    from openinference.instrumentation.agno import AgnoInstrumentor
-
     PUBLIC = os.getenv("LANGFUSE_PUBLIC_KEY")
     SECRET = os.getenv("LANGFUSE_SECRET_KEY")
 
+    # Skip tracing if keys are not provided
     if not PUBLIC or not SECRET:
-        raise ValueError("Langfuse keys missing — set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY")
+        logger.info("Langfuse keys not provided — tracing disabled")
+        return
 
-    auth = base64.b64encode(f"{PUBLIC}:{SECRET}".encode()).decode()
+    try:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from openinference.instrumentation.agno import AgnoInstrumentor
 
-    exporter = OTLPSpanExporter(
-        endpoint="https://cloud.langfuse.com/api/public/otel/v1/traces",
-        headers={"Authorization": f"Basic {auth}"},
-    )
+        auth = base64.b64encode(f"{PUBLIC}:{SECRET}".encode()).decode()
 
-    provider = TracerProvider()
-    provider.add_span_processor(BatchSpanProcessor(exporter))
-    trace_api.set_tracer_provider(provider)
+        exporter = OTLPSpanExporter(
+            endpoint="https://cloud.langfuse.com/api/public/otel/v1/traces",
+            headers={"Authorization": f"Basic {auth}"},
+            timeout=30,
+        )
 
-    AgnoInstrumentor().instrument()
+        provider = TracerProvider()
+        provider.add_span_processor(
+            BatchSpanProcessor(
+                exporter,
+                max_export_batch_size=10,  # ← don't pile up too many spans
+                export_timeout_millis=30000,
+                schedule_delay_millis=2000,
+            )
+        )
+        trace_api.set_tracer_provider(provider)
 
-    logger.info("Langfuse tracing initialized ✅")
+        AgnoInstrumentor().instrument()
+
+        logger.info("Langfuse tracing initialized ✅")
+    except ImportError as e:
+        logger.warning(f"Tracing dependencies not installed — skipping: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to initialize tracing — skipping: {e}")
 
 
 _setup_tracing()
