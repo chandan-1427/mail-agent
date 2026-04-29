@@ -1,35 +1,24 @@
 """
 agents/reply_composer.py
-
-Drafts a polite, context-aware reply to the candidate asking for the
-fields that are still missing.
-
-Input prompt shape
-------------------
-candidate_email      : str
-application_status   : str  ("PENDING" | "APPROVED" | "STALLED")
-missing_fields       : list[dict]  (JSON – full requirement objects)
-items_received       : list[str]   (JSON – field names already collected)
-
-Output (raw JSON)
------------------
-{
-  "reply_draft": "<email body text>"
-}
 """
 
 import json
 import logging
+from functools import lru_cache
 
-from ._base import build_agent
+from ._base import build_agent, _log_cache_metrics
 from mail_agent.model_factory import extract_json
-from mail_agent.utils import parse_json
 
 logger = logging.getLogger(__name__)
 
-_agent = build_agent("hr-reply-composer", agent_type="reply")
 
-# Fallback template used when the agent errors out.
+# ✅ Single agent instance — system prompt never changes
+# lru_cache(maxsize=1) ensures byte-identical system prompt on every call
+@lru_cache(maxsize=1)
+def _get_agent():
+    return build_agent("hr-reply-composer", agent_type="reply")
+
+
 _FALLBACK_TEMPLATE = (
     "Thank you for your application.\n\n"
     "We still need:\n{missing_list}"
@@ -44,30 +33,28 @@ APPROVED_REPLY = (
 
 def run(
     *,
-    sender: str,
+    sender: str,          # ✅ intentionally excluded from prompt
     status: str,
     missing_field_objects: list[dict],
     received_keys: list[str],
 ) -> str:
-    """
-    Return the reply body as a plain string.
-
-    If the application is APPROVED the standard sign-off is returned
-    immediately without calling the agent.
-    """
     if status == "APPROVED":
-        return APPROVED_REPLY
+        return APPROVED_REPLY  # ✅ zero LLM cost on approved
 
-    prompt = f"""
-candidate_email: {sender}
-application_status: {status}
-missing_fields: {json.dumps(missing_field_objects)}
-items_received: {json.dumps(received_keys)}
-""".strip()
+    # ✅ Normalize + sort inputs so identical data = identical string = cache hit
+    sorted_missing = sorted(missing_field_objects, key=lambda x: x["name"])
+    sorted_received = sorted(received_keys)
+
+    # ✅ User turn: only truly dynamic data, NO sender (changes per candidate)
+    prompt = (
+        f"application_status: {status}\n"
+        f"missing_fields: {json.dumps(sorted_missing, sort_keys=True, separators=(',', ':'))}\n"
+        f"items_received: {json.dumps(sorted_received, separators=(',', ':'))}"
+    )
 
     try:
-        response = _agent.run(prompt)
-        # Use extract_json for MiniMax (free-form output), parse_json for others
+        response = _get_agent().run(prompt)
+        _log_cache_metrics("reply-composer", response)
         result = extract_json(response.content)
         return result.get("reply_draft", "")
     except Exception as exc:

@@ -72,10 +72,18 @@ def _setup_tracing() -> None:
         exporter = OTLPSpanExporter(
             endpoint="https://cloud.langfuse.com/api/public/otel/v1/traces",
             headers={"Authorization": f"Basic {auth}"},
+            timeout=30,
         )
 
         provider = TracerProvider()
-        provider.add_span_processor(BatchSpanProcessor(exporter))
+        provider.add_span_processor(
+            BatchSpanProcessor(
+                exporter,
+                max_export_batch_size=10,  # ← don't pile up too many spans
+                export_timeout_millis=30000,
+                schedule_delay_millis=2000,
+            )
+        )
         trace_api.set_tracer_provider(provider)
 
         AgnoInstrumentor().instrument()
