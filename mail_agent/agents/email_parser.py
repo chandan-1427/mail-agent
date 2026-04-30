@@ -51,10 +51,8 @@ def run(
     doc_context: str = "",
     history_context: str = "",
 ) -> dict:
-    # ✅ Agent selected by requirements — system prompt is stable per job role
     agent = _get_agent(_requirements_key(requirements))
 
-    # ✅ User turn: only truly dynamic data — changes per candidate/email
     prompt = f"""
 candidate_email: {sender}
 current_known_data: {json.dumps(current_known_data)}

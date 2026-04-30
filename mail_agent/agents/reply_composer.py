@@ -12,8 +12,6 @@ from mail_agent.model_factory import extract_json
 logger = logging.getLogger(__name__)
 
 
-# ✅ Single agent instance — system prompt never changes
-# lru_cache(maxsize=1) ensures byte-identical system prompt on every call
 @lru_cache(maxsize=1)
 def _get_agent():
     return build_agent("hr-reply-composer", agent_type="reply")
@@ -33,19 +31,17 @@ APPROVED_REPLY = (
 
 def run(
     *,
-    sender: str,          # ✅ intentionally excluded from prompt
+    sender: str,
     status: str,
     missing_field_objects: list[dict],
     received_keys: list[str],
 ) -> str:
     if status == "APPROVED":
-        return APPROVED_REPLY  # ✅ zero LLM cost on approved
+        return APPROVED_REPLY
 
-    # ✅ Normalize + sort inputs so identical data = identical string = cache hit
     sorted_missing = sorted(missing_field_objects, key=lambda x: x["name"])
     sorted_received = sorted(received_keys)
 
-    # ✅ User turn: only truly dynamic data, NO sender (changes per candidate)
     prompt = (
         f"application_status: {status}\n"
         f"missing_fields: {json.dumps(sorted_missing, sort_keys=True, separators=(',', ':'))}\n"

@@ -23,18 +23,18 @@ def load_skills(skills_dir: str = SKILLS_DIR) -> dict[str, dict]:
             raw = f.read()
 
         if not raw.startswith("---"):
-            print(f"  ⚠️ Skipping {filepath}: no YAML frontmatter found")
+            print(f"  Skipping {filepath}: no YAML frontmatter found")
             continue
 
         parts = raw.split("---", 2)
         if len(parts) < 3:
-            print(f"  ⚠️ Skipping {filepath}: malformed frontmatter")
+            print(f"  Skipping {filepath}: malformed frontmatter")
             continue
 
         try:
             frontmatter = yaml.safe_load(parts[1])
         except yaml.YAMLError as e:
-            print(f"  ⚠️ Skipping {filepath}: YAML parse error: {e}")
+            print(f"  Skipping {filepath}: YAML parse error: {e}")
             continue
 
         body = parts[2].strip()
@@ -51,7 +51,7 @@ def load_skills(skills_dir: str = SKILLS_DIR) -> dict[str, dict]:
             "source_file": filepath,
         }
 
-        print(f"  ✅ Loaded skill: {name} (mode: {metadata.get('execution-mode', 'llm')})")
+        print(f"  Loaded skill: {name} (mode: {metadata.get('execution-mode', 'llm')})")
 
     return skills
 

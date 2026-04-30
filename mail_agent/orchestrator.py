@@ -27,8 +27,6 @@ MAX_REPLIES_PER_THREAD = 5
 STALLED_THRESHOLD_DAYS = 7
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-
 def _build_doc_context(extracted_texts: dict) -> str:
     if not extracted_texts:
         return ""
@@ -59,13 +57,11 @@ def _merge_extracted(
     """
     extracted = dict(state.extracted_data or {})
 
-    # Persist file paths for file-type requirements
     for file_type, path in saved_files.items():
         for req in requirements:
             if req["field_type"] == "file" and req["name"] == file_type:
                 extracted[req["name"]] = path
 
-    # Merge text fields from parser
     raw = parser_result.get("extracted_data", parser_result)
     for key, value in raw.items():
         if key == "summary" or value is None:
@@ -88,8 +84,6 @@ def _compute_missing(extracted: dict, field_names: list[str]) -> list[str]:
     ]
 
 
-# ── main entry ────────────────────────────────────────────────────────────────
-
 def run(
     *,
     sender: str,
@@ -110,7 +104,6 @@ def run(
     requirements = get_requirements(db, inbox_id)
     field_names = [r["name"] for r in requirements]
 
-    # ── 1. Load or create applicant state ────────────────────────────────────
     state = db.query(ApplicantState).filter(
         ApplicantState.thread_id == thread_id
     ).first()
@@ -131,7 +124,6 @@ def run(
     if (state.reply_count or 0) >= MAX_REPLIES_PER_THREAD:
         return {"status": "ignored", "reason": "reply_cap_reached"}
 
-    # ── 2. Stalled detection ─────────────────────────────────────────────────
     if state.status == "PENDING" and state.updated_at and not state.stalled_at:
         updated_at = state.updated_at
         if updated_at.tzinfo is None:
@@ -142,12 +134,10 @@ def run(
             trigger_escalation(thread_id, sender, "Application stalled for 7+ days")
             db.commit()
 
-    # ── 3. Handle attachments ─────────────────────────────────────────────────
     saved_files, extracted_texts = handle_attachments(
         attachments, thread_id, sender, inbox_id, message_id, db
     )
 
-    # ── 4. Email parser agent ─────────────────────────────────────────────────
     history = get_conversation_history(db, thread_id)
     doc_context = _build_doc_context(extracted_texts)
     history_context = _build_history_context(history)
@@ -162,22 +152,18 @@ def run(
         history_context=history_context,
     )
 
-    # ── 5. Merge extracted data ───────────────────────────────────────────────
     extracted = _merge_extracted(state, requirements, saved_files, parser_result)
     state.extracted_data = extracted
 
-    # ── 6. Triage agent ───────────────────────────────────────────────────────
     triage_result = triage_agent.run(
         requirements=requirements,
         extracted_data=extracted,
     )
     logger.info(f"  triage advisory missing: {triage_result.get('missing_fields', [])}")
 
-    # Authoritative missing-fields check (deterministic, not LLM-dependent)
     missing_fields = _compute_missing(extracted, field_names)
     missing_field_objects = [r for r in requirements if r["name"] in missing_fields]
 
-    # ── 7. Update state ───────────────────────────────────────────────────────
     old_status = state.status
     state.missing_fields = missing_fields
     state.latest_message = raw_text
@@ -196,7 +182,6 @@ def run(
         new_missing_fields=missing_fields,
     ))
 
-    # ── 8. Reply composer agent ───────────────────────────────────────────────
     reply_text = composer_agent.run(
         sender=sender,
         status=state.status,
@@ -206,7 +191,6 @@ def run(
 
     db.commit()
 
-    # ── 9. Send reply ─────────────────────────────────────────────────────────
     if reply_text:
         try:
             agentmail_client.inboxes.messages.reply(
