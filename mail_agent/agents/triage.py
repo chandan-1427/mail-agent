@@ -31,7 +31,6 @@ def _requirements_key(requirements: list[dict]) -> str:
 def run(*, requirements: list[dict], extracted_data: dict) -> dict:
     agent = _get_agent(_requirements_key(requirements))
 
-    # ✅ Only extracted_data is dynamic — everything else is in system prompt
     prompt = f"extracted_data: {json.dumps(extracted_data)}"
 
     try:

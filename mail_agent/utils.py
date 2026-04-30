@@ -11,10 +11,6 @@ from mail_agent.models import ApplicantFile, ApplicantState, JobRequirement
 
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# CONSTANTS (used only by utils — will move to config.py later)
-# ============================================================
-
 AGENTMAIL_API_KEY = os.getenv("AGENTMAIL_API_KEY")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
 
@@ -41,10 +37,6 @@ DEFAULT_REQUIREMENTS = [
 
 agentmail_client = AgentMail(api_key=AGENTMAIL_API_KEY)
 
-# ============================================================
-# RATE LIMITING
-# ============================================================
-
 rate_limit_store = defaultdict(list)
 
 
@@ -59,10 +51,6 @@ def check_rate_limit(identifier: str) -> bool:
     rate_limit_store[identifier].append(now)
     return True
 
-
-# ============================================================
-# REQUIREMENTS
-# ============================================================
 
 def validate_requirements(fields: list[dict]) -> list[str]:
     if not fields:
@@ -87,12 +75,7 @@ def get_requirements(db, inbox_id: str) -> list[dict]:
     return job_req.required_fields if job_req else DEFAULT_REQUIREMENTS
 
 
-# ============================================================
-# JSON PARSING
-# ============================================================
-
 def parse_json(raw) -> dict:
-    # unwrap Agno response object
     if hasattr(raw, "content"):
         raw = raw.content
     if isinstance(raw, list):
@@ -100,18 +83,15 @@ def parse_json(raw) -> dict:
     if not isinstance(raw, str):
         raw = str(raw)
 
-    # strip markdown fences
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
     if fenced:
         raw = fenced.group(1).strip()
 
-    # clean parse
     try:
         return json.loads(raw.strip())
     except json.JSONDecodeError:
         pass
 
-    # brace-match for first complete {...}
     brace_count, start = 0, None
     for i, ch in enumerate(raw):
         if ch == "{":
@@ -129,10 +109,6 @@ def parse_json(raw) -> dict:
     logging.getLogger(__name__).error(f"parse_json failed:\n{raw[:400]}")
     return {}
 
-
-# ============================================================
-# CONVERSATION HISTORY
-# ============================================================
 
 def get_conversation_history(db, thread_id: str) -> list[dict]:
     from mail_agent.models import ApplicantMessageLog
@@ -152,10 +128,6 @@ def get_conversation_history(db, thread_id: str) -> list[dict]:
         for l in logs
     ]
 
-
-# ============================================================
-# FILE HANDLING
-# ============================================================
 
 def extract_text_from_file(file_path: str, filename: str) -> str:
     try:
@@ -213,10 +185,6 @@ def handle_attachments(attachments, thread_id, sender, inbox_id, message_id, db)
             logger.warning(f"Failed to save attachment {filename}: {e}")
     return saved_files, extracted_texts
 
-
-# ============================================================
-# ESCALATION
-# ============================================================
 
 def trigger_escalation(thread_id: str, sender: str, reason: str):
     logger.warning(f"Escalation: thread={thread_id} reason={reason}")

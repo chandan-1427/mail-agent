@@ -27,8 +27,6 @@ from mail_agent.routes import (
 
 load_dotenv()
 
-# ── config ────────────────────────────────────────────────────────────────────
-
 for _d in [RESUME_DIR, COVER_LETTER_DIR, OTHER_DIR]:
     os.makedirs(_d, exist_ok=True)
 
@@ -39,8 +37,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Langfuse setup (guarded — runs only once) ─────────────────────────────────
-
 def _setup_tracing() -> None:
     """
     Set up Langfuse/OTel tracing exactly once.
@@ -49,7 +45,6 @@ def _setup_tracing() -> None:
       - WARNING: Overriding of current TracerProvider is not allowed
       - WARNING: Attempting to instrument while already instrumented
     """
-    # If a real TracerProvider is already registered, skip entirely
     if isinstance(trace_api.get_tracer_provider(), TracerProvider):
         logger.debug("Tracing already initialized — skipping.")
         return
@@ -57,7 +52,6 @@ def _setup_tracing() -> None:
     PUBLIC = os.getenv("LANGFUSE_PUBLIC_KEY")
     SECRET = os.getenv("LANGFUSE_SECRET_KEY")
 
-    # Skip tracing if keys are not provided
     if not PUBLIC or not SECRET:
         logger.info("Langfuse keys not provided — tracing disabled")
         return
@@ -79,7 +73,7 @@ def _setup_tracing() -> None:
         provider.add_span_processor(
             BatchSpanProcessor(
                 exporter,
-                max_export_batch_size=10,  # ← don't pile up too many spans
+                max_export_batch_size=10,
                 export_timeout_millis=30000,
                 schedule_delay_millis=2000,
             )
@@ -88,7 +82,7 @@ def _setup_tracing() -> None:
 
         AgnoInstrumentor().instrument()
 
-        logger.info("Langfuse tracing initialized ✅")
+        logger.info("Langfuse tracing initialized")
     except ImportError as e:
         logger.warning(f"Tracing dependencies not installed — skipping: {e}")
     except Exception as e:
@@ -97,39 +91,27 @@ def _setup_tracing() -> None:
 
 _setup_tracing()
 
-# ── database ──────────────────────────────────────────────────────────────────
-
 init_db()
 
-# ── app ───────────────────────────────────────────────────────────────────────
-
 app = FastAPI(title="HR Triage Agent")
-
-# ── register routes ───────────────────────────────────────────────────────────
 
 app.include_router(webhook_router)
 app.include_router(applicants_router)
 app.include_router(requirements_router)
 app.include_router(misc_router)
 
-# ── entrypoint ────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     import uvicorn
     
-    # Check if BINDU_DEPLOYMENT_URL is set to run in Bindu mode
     if os.getenv("BINDU_DEPLOYMENT_URL"):
-        # Bindu mode
         from bindu.penguin.bindufy import bindufy
         from agno.agent import Agent
         from mail_agent.agents._base import build_agent
         from mail_agent.database import SessionLocal
         from mail_agent.orchestrator import run as orchestrator_run
         
-        # 1. Build your agent with whatever framework you prefer
         agent = build_agent("email-parser", "parser")
         
-        # 2. Tell Bindu who you are and where the agent lives
         config = {
             "author": "hr-automation@example.com",
             "name": "mail_triage_agent",
@@ -140,7 +122,6 @@ if __name__ == "__main__":
             },
         }
         
-        # 3. The handler contract: (messages) -> response
         def handler(messages):
             if not messages:
                 return {"status": "error", "message": "No messages provided"}
@@ -155,7 +136,6 @@ if __name__ == "__main__":
                     "message": f"Missing required fields: {', '.join(missing_fields)}"
                 }
             
-            # Extract message data
             sender = message["sender"]
             thread_id = message["thread_id"]
             inbox_id = message["inbox_id"]
@@ -163,7 +143,6 @@ if __name__ == "__main__":
             raw_text = message["text"]
             attachments = message.get("attachments", [])
             
-            # Create database session
             db = SessionLocal()
             
             try:
@@ -184,10 +163,8 @@ if __name__ == "__main__":
             finally:
                 db.close()
         
-        # 4. bindufy() boots the HTTP server
         bindufy(config, handler)
     else:
-        # Normal FastAPI mode
         print("Starting on http://0.0.0.0:8000")
         print("Dashboard: http://localhost:8000/dashboard")
         uvicorn.run("mail_agent.main:app", host="0.0.0.0", port=8000)
